@@ -1,0 +1,165 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:wght@300;400;500;600;700&family=Barlow+Condensed:wght@400;600;700&display=swap');
+
+:root {
+  --black:     #0a0a0a;
+  --dark:      #111111;
+  --card:      #1a1a1a;
+  --gold:      #C9A84C;
+  --gold-l:    #E8C97A;
+  --gold-dim:  rgba(201,168,76,0.15);
+  --cream:     #F5F0E8;
+  --gray:      #888888;
+  --green:     #2ECC71;
+  --red:       #E74C3C;
+  --orange:    #E67E22;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--black);
+  color: var(--cream);
+  font-family: 'Barlow', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar personalizado */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--dark); }
+::-webkit-scrollbar-thumb { background: var(--gold); border-radius: 3px; }
+
+/* Clases utilitarias Fresh Cuts */
+.fc-title {
+  font-family: 'Bebas Neue', sans-serif;
+  letter-spacing: 0.05em;
+}
+
+.fc-label {
+  font-family: 'Barlow Condensed', sans-serif;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.fc-gold { color: var(--gold); }
+.fc-cream { color: var(--cream); }
+.fc-gray { color: var(--gray); }
+
+.fc-card {
+  background: var(--card);
+  border: 1px solid rgba(201,168,76,0.15);
+  border-radius: 12px;
+}
+
+.fc-btn-gold {
+  background: var(--gold);
+  color: var(--black);
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-radius: 8px;
+  padding: 12px 24px;
+  transition: all 0.2s;
+  cursor: pointer;
+  border: none;
+  font-size: 15px;
+}
+
+.fc-btn-gold:hover {
+  background: var(--gold-l);
+  transform: translateY(-1px);
+}
+
+.fc-btn-gold:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.fc-btn-outline {
+  background: transparent;
+  color: var(--gold);
+  border: 1px solid var(--gold);
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-radius: 8px;
+  padding: 12px 24px;
+  transition: all 0.2s;
+  cursor: pointer;
+  font-size: 15px;
+}
+
+.fc-btn-outline:hover {
+  background: var(--gold-dim);
+}
+
+.fc-input {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(201,168,76,0.25);
+  color: var(--cream);
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-family: 'Barlow', sans-serif;
+  font-size: 15px;
+  width: 100%;
+  transition: border-color 0.2s;
+  outline: none;
+}
+
+.fc-input:focus {
+  border-color: var(--gold);
+}
+
+.fc-input::placeholder {
+  color: var(--gray);
+}
+
+.fc-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(201,168,76,0.3), transparent);
+}
+
+/* Animaciones */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.5; transform: scale(0.8); }
+}
+
+.anim-fadeup { animation: fadeUp 0.4s ease both; }
+.anim-fadein { animation: fadeIn 0.3s ease both; }
+
+/* ─── RESPONSIVE ─── */
+@media (max-width: 480px) {
+  .fc-title { letter-spacing: 0.02em; }
+
+  .fc-btn-gold, .fc-btn-outline {
+    padding: 11px 18px;
+    font-size: 14px;
+  }
+
+  .fc-input {
+    font-size: 16px; /* evita zoom en iOS */
+  }
+}
+
+/* Ocultar scrollbar horizontal en selectores de días */
+.hide-scrollbar::-webkit-scrollbar { display: none; }
+.hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
