@@ -13,7 +13,7 @@ export default function ProductsTab() {
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
 
-  const emptyForm = { name: '', description: '', category_id: '', price: 0, stock: 0, badge: '' as const, image_url: '', active: true };
+  const emptyForm: { name: string; description: string; category_id: string; price: number; stock: number; badge: '' | 'new' | 'hot'; image_url: string; active: boolean } = { name: '', description: '', category_id: '', price: 0, stock: 0, badge: '', image_url: '', active: true };
   const [form, setForm] = useState(emptyForm);
 
   useEffect(() => { loadData(); }, []);
