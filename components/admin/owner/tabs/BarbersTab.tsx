@@ -19,7 +19,7 @@ export default function BarbersTab() {
   const [editing, setEditing] = useState<Barber | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [expandedBlocks, setExpandedBlocks] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', username: '', phone: '', avatar_emoji: '✂️', role: 'barber' as const });
+  const [form, setForm] = useState<{ name: string; username: string; phone: string; avatar_emoji: string; role: 'barber' | 'owner' }>({ name: '', username: '', phone: '', avatar_emoji: '✂️', role: 'barber' });
   const [newPassword, setNewPassword] = useState('');
   const [saving, setSaving] = useState(false);
 
