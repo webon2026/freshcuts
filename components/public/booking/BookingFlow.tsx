@@ -529,21 +529,21 @@ export default function BookingFlow() {
           <button onClick={() => setStep('info')} style={{ color: 'var(--gray)', background: 'none', border: 'none', cursor: 'pointer', marginBottom: 14, fontSize: 13 }}>← Volver</button>
           <h2 className="fc-title" style={{ fontSize: 26, color: 'var(--gold)', marginBottom: 18 }}>Confirmar cita</h2>
           <div className="fc-card" style={{ padding: 20, marginBottom: 16 }}>
-            {[
+            {([
               ['💈', 'Servicio',  bdata.service?.name],
-              ['💵', 'Precio',    bdata.service && formatPrice(bdata.service.price)],
+              ['💵', 'Precio',    bdata.service ? formatPrice(bdata.service.price) : ''],
               ['✂️', 'Barbero',   bdata.barber?.name],
               ['📅', 'Fecha',     formatDateLong(bdata.date)],
               ['🕐', 'Hora',      bdata.time ? bdata.time + ' hrs' : ''],
               ['👤', 'Cliente',   bdata.client_name],
               ['📞', 'Teléfono',  bdata.client_phone],
-              bdata.notes ? ['📝', 'Nota', bdata.notes] : null,
-            ].filter(Boolean).map(([emoji, label, value]) => (
-              <div key={label as string} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', gap: 12 }}>
+              ...(bdata.notes ? [['📝', 'Nota', bdata.notes]] : []),
+            ] as [string, string, string][]).map(([emoji, label, value]) => (
+              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', gap: 12 }}>
                 <span style={{ color: 'var(--gray)', fontSize: 13, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 7 }}>
-                  <span style={{ fontSize: 15 }}>{emoji as string}</span>{label as string}
+                  <span style={{ fontSize: 15 }}>{emoji}</span>{label}
                 </span>
-                <span style={{ color: 'var(--cream)', fontWeight: 600, fontSize: 13, textAlign: 'right' }}>{value as string}</span>
+                <span style={{ color: 'var(--cream)', fontWeight: 600, fontSize: 13, textAlign: 'right' }}>{value}</span>
               </div>
             ))}
           </div>
