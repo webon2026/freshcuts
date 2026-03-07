@@ -195,8 +195,30 @@ export default function AppointmentsTab({ isOwner = false }: Props) {
   }, [loadMyAppointments, loadTeamAppointments]);
 
   async function updateStatus(appt: Appointment, status: AppointmentStatus) {
+    // 1. Actualizar estado de la cita
     await supabase.from('appointments').update({ status }).eq('id', appt.id);
     setMyAppointments(prev => prev.map(a => a.id === appt.id ? { ...a, status } : a));
+
+    // 2. Sincronizar estado del barbero:
+    //    in_progress  → busy      (está atendiendo al cliente)
+    //    done         → available (terminó, puede tomar más citas)
+    //    cancelled    → available (se liberó)
+    //    pending/confirmed no cambian el estado visual del barbero
+    //    Nota: los botones de estado en BarbersTab son solo display del dashboard
+    //          y NO afectan la disponibilidad para reservar horas nuevas.
+    //          Solo BlockSchedule bloquea la toma de horas.
+    const barberId = appt.barber_id ?? (appt.barber as any)?.id;
+    if (barberId) {
+      const barberStatus =
+        status === 'in_progress'                    ? 'busy'      :
+        status === 'done' || status === 'cancelled' ? 'available' :
+        null;
+      if (barberStatus) {
+        await supabase.from('barbers').update({ status: barberStatus }).eq('id', barberId);
+      }
+    }
+
+    // 3. Enviar WhatsApp al cliente
     const waNum = formatChilePhone(appt.client_phone);
     const msgFn = WSP_MESSAGES[status];
     if (msgFn && waNum) window.open('https://wa.me/' + waNum + '?text=' + msgFn({ ...appt, status }), '_blank');
