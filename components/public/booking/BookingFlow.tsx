@@ -11,7 +11,6 @@ interface BookingData {
   time?: string; client_name?: string; client_phone?: string; notes?: string;
 }
 
-// Cada slot tiene un estado visual
 type SlotState = 'free' | 'pending' | 'taken';
 interface Slot { time: string; state: SlotState; }
 
@@ -30,7 +29,7 @@ export default function BookingFlow() {
   const [slots, setSlots] = useState<Slot[]>([]);
   const [loadingSlots, setLoadingSlots] = useState(false);
   const [slotError, setSlotError] = useState('');
-  const [pendingMsg, setPendingMsg] = useState(''); // mensaje al tocar slot pendiente
+  const [pendingMsg, setPendingMsg] = useState('');
   const [loading, setLoading] = useState(false);
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
@@ -66,27 +65,25 @@ export default function BookingFlow() {
   }
 
   async function loadBarbers() {
-    const { data } = await supabase.from('barbers').select('*').eq('active',true).eq('role','barber').order('sort_order');
+    // Solo filtra por active=true — el status (busy/break/off) es display del dashboard
+    // y NUNCA bloquea la toma de horas. Solo barber_blocks bloquea reservas.
+    const { data } = await supabase.from('barbers').select('*')
+      .eq('active', true).eq('role', 'barber').order('sort_order');
     if (data) setBarbers(data);
   }
 
-  // ─── Cargar slots directo desde Supabase (sin API route, sin caché) ───
   async function loadSlots(barberId: string, date: string, showSpinner = true) {
     if (showSpinner) setLoadingSlots(true);
     setSlotError('');
     try {
-      // 1. Estado del barbero
+      // 1. Solo verificar que el barbero esté activo.
+      //    NO se chequea status — busy/break/off son solo display del dashboard.
+      //    Unicamente barber_blocks bloquea horas reales.
       const { data: barber } = await supabase
-        .from('barbers').select('status').eq('id', barberId).single();
+        .from('barbers').select('active').eq('id', barberId).single();
 
-      if (!barber || barber.status === 'off') {
+      if (!barber || !barber.active) {
         setSlotError('Este barbero no esta disponible. Elige otro.');
-        setSlots([]);
-        if (showSpinner) setLoadingSlots(false);
-        return;
-      }
-      if (barber.status === 'break') {
-        setSlotError('Este barbero esta en descanso. Intenta mas tarde.');
         setSlots([]);
         if (showSpinner) setLoadingSlots(false);
         return;
@@ -113,7 +110,7 @@ export default function BookingFlow() {
         }
       }
 
-      // 4. Bloqueos del barbero ese día
+      // 4. Bloqueos del barbero ese día (esto SÍ bloquea reservas reales)
       const { data: blocks } = await supabase
         .from('barber_blocks').select('*')
         .eq('barber_id', barberId).eq('block_date', date);
@@ -140,10 +137,10 @@ export default function BookingFlow() {
       for (const a of appts || []) {
         const t = a.appointment_time.slice(0, 5);
         if (a.status === 'pending') pendingSet.add(t);
-        else takenSet.add(t); // confirmed o in_progress
+        else takenSet.add(t);
       }
 
-      // 6. Construir slots visibles: excluir bloqueados y tomados, mostrar pending con aviso
+      // 6. Construir slots visibles: excluir bloqueados y tomados
       const result: Slot[] = allTimes
         .filter(t => !blockedSet.has(t) && !takenSet.has(t))
         .map(t => ({ time: t, state: pendingSet.has(t) ? 'pending' : 'free' }));
@@ -160,11 +157,10 @@ export default function BookingFlow() {
     return h * 60 + m;
   }
 
-  // ─── Polling cada 4s mientras el usuario está eligiendo hora ───
   function startPolling(barberId: string, date: string) {
     stopPolling();
     pollRef.current = setInterval(() => {
-      loadSlots(barberId, date, false); // sin spinner para no parpadear
+      loadSlots(barberId, date, false);
     }, 4000);
   }
 
@@ -172,7 +168,6 @@ export default function BookingFlow() {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
   }
 
-  // Iniciar/detener polling según el step
   useEffect(() => {
     if (step === 'datetime' && barberIdRef.current && dayRef.current) {
       startPolling(barberIdRef.current, dayRef.current);
@@ -182,7 +177,8 @@ export default function BookingFlow() {
     return stopPolling;
   }, [step]);
 
-  // Realtime como capa adicional (si funciona, actualiza más rápido que el polling)
+  // Realtime: solo escucha appointments — ya NO escucha cambios de barbers
+  // porque el status del barbero no debe afectar los slots disponibles.
   useEffect(() => {
     const ch = supabase.channel('bf-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => {
@@ -190,13 +186,7 @@ export default function BookingFlow() {
           loadSlots(barberIdRef.current, dayRef.current, false);
         }
       })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'barbers' }, () => {
-        if (barberIdRef.current && dayRef.current) {
-          loadSlots(barberIdRef.current, dayRef.current, false);
-        }
-      })
       .subscribe((status: string) => {
-        // Si el realtime falla, el polling de 4s igual cubre
         if (status === 'CHANNEL_ERROR') console.warn('[RT] sin realtime, usando polling');
       });
     return () => { supabase.removeChannel(ch); };
@@ -226,7 +216,6 @@ export default function BookingFlow() {
     if (!bdata.service || !bdata.barber || !bdata.date || !bdata.time || !bdata.client_name || !bdata.client_phone) return;
     setLoading(true);
 
-    // Verificar que el slot sigue libre directamente en Supabase
     const { data: conflict } = await supabase
       .from('appointments').select('id')
       .eq('barber_id', bdata.barber.id)
@@ -257,7 +246,6 @@ export default function BookingFlow() {
 
     setLoading(false);
     if (!error) {
-      // Actualizar slot localmente a 'pending' para quien siga viendo la pantalla
       setSlots(prev => prev.map(s => s.time === bdata.time ? { ...s, state: 'pending' } : s));
 
       const rawPhone = bdata.barber.phone || settings.whatsapp_number || '';
@@ -357,36 +345,33 @@ export default function BookingFlow() {
           <h2 className="fc-title" style={{ fontSize: 26, color: 'var(--gold)', marginBottom: 4 }}>Con quien?</h2>
           <p style={{ color: 'var(--gray)', marginBottom: 16, fontSize: 13 }}>Elige tu barbero</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {barbers.map(b => {
-              const isOff = b.status === 'off';
-              return (
-                <button key={b.id}
-                  onClick={() => {
-                    if (isOff) return;
-                    barberIdRef.current = b.id;
-                    setBdata({ ...bdata, barber: b });
-                    setStep('datetime');
-                  }}
-                  disabled={isOff}
-                  style={{ background: 'var(--card)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 12, padding: '16px 18px', cursor: isOff ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 14, opacity: isOff ? 0.4 : 1, width: '100%', transition: 'border-color 0.2s' }}
-                  onMouseEnter={e => { if (!isOff) e.currentTarget.style.borderColor = 'var(--gold)'; }}
-                  onMouseLeave={e => e.currentTarget.style.borderColor = 'rgba(201,168,76,0.2)'}
-                >
-                  <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'rgba(201,168,76,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>{b.avatar_emoji}</div>
-                  <div style={{ textAlign: 'left', flex: 1 }}>
-                    <div style={{ color: 'var(--cream)', fontWeight: 600, fontSize: 15 }}>
-                      {b.name}
-                      {b.role === 'owner' && <span style={{ fontSize: 10, color: 'var(--gold)', background: 'rgba(201,168,76,0.1)', padding: '2px 7px', borderRadius: 8, marginLeft: 6 }}>Dueno</span>}
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 3 }}>
-                      <div style={{ width: 7, height: 7, borderRadius: '50%', background: BARBER_COLOR[b.status] || 'var(--gray)', flexShrink: 0 }} />
-                      <span style={{ color: 'var(--gray)', fontSize: 12 }}>{BARBER_LABEL[b.status] || b.status}</span>
-                    </div>
+            {barbers.map(b => (
+              // Todos los barberos activos son seleccionables.
+              // El status (busy/break/off) es solo informativo — no bloquea reservas.
+              <button key={b.id}
+                onClick={() => {
+                  barberIdRef.current = b.id;
+                  setBdata({ ...bdata, barber: b });
+                  setStep('datetime');
+                }}
+                style={{ background: 'var(--card)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 12, padding: '16px 18px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14, opacity: 1, width: '100%', transition: 'border-color 0.2s' }}
+                onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--gold)'}
+                onMouseLeave={e => e.currentTarget.style.borderColor = 'rgba(201,168,76,0.2)'}
+              >
+                <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'rgba(201,168,76,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>{b.avatar_emoji}</div>
+                <div style={{ textAlign: 'left', flex: 1 }}>
+                  <div style={{ color: 'var(--cream)', fontWeight: 600, fontSize: 15 }}>
+                    {b.name}
+                    {b.role === 'owner' && <span style={{ fontSize: 10, color: 'var(--gold)', background: 'rgba(201,168,76,0.1)', padding: '2px 7px', borderRadius: 8, marginLeft: 6 }}>Dueno</span>}
                   </div>
-                  {isOff && <span style={{ fontSize: 11, color: '#E74C3C', background: 'rgba(231,76,60,0.1)', padding: '3px 8px', borderRadius: 8, flexShrink: 0 }}>No disponible</span>}
-                </button>
-              );
-            })}
+                  {/* Status solo visual — no restringe reservas */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 3 }}>
+                    <div style={{ width: 7, height: 7, borderRadius: '50%', background: BARBER_COLOR[b.status] || 'var(--gray)', flexShrink: 0 }} />
+                    <span style={{ color: 'var(--gray)', fontSize: 12 }}>{BARBER_LABEL[b.status] || b.status}</span>
+                  </div>
+                </div>
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -404,8 +389,7 @@ export default function BookingFlow() {
               const sel = selectedDay === d.iso;
               return (
                 <button key={d.iso} onClick={() => handleSelectDay(d.iso)}
-                  style={{ minWidth: 56, padding: '9px 6px', borderRadius: 10, border: `1px solid ${sel ? 'var(--gold)' : 'rgba(255,255,255,0.08)'}`, cursor: 'pointer', textAlign: 'center', background: sel ? 'var(--gold)' : 'var(--card)', color: sel ? 'var(--black)' : 'var(--gray)', transition: 'all 0.15s', flexShrink: 0 }}
-                >
+                  style={{ minWidth: 56, padding: '9px 6px', borderRadius: 10, border: `1px solid ${sel ? 'var(--gold)' : 'rgba(255,255,255,0.08)'}`, cursor: 'pointer', textAlign: 'center', background: sel ? 'var(--gold)' : 'var(--card)', color: sel ? 'var(--black)' : 'var(--gray)', transition: 'all 0.15s', flexShrink: 0 }}>
                   <div style={{ fontSize: 10, fontWeight: 600 }}>{d.label}</div>
                   <div style={{ fontSize: 20, fontWeight: 700, lineHeight: 1.2 }}>{d.num}</div>
                 </button>
@@ -413,7 +397,7 @@ export default function BookingFlow() {
             })}
           </div>
 
-          {/* Error de barbero */}
+          {/* Error */}
           {slotError && (
             <div style={{ background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.2)', borderRadius: 10, padding: '16px', textAlign: 'center', marginBottom: 12 }}>
               <div style={{ color: '#E74C3C', fontSize: 13, marginBottom: 10 }}>{slotError}</div>
@@ -451,17 +435,7 @@ export default function BookingFlow() {
                       return (
                         <button key={slot.time}
                           onClick={() => handleClickSlot(slot)}
-                          style={{
-                            padding: isPending ? '7px 0 5px' : '11px 0',
-                            borderRadius: 8,
-                            border: isPending ? '1px solid rgba(241,196,15,0.4)' : '1px solid rgba(201,168,76,0.2)',
-                            background: isPending ? 'rgba(241,196,15,0.07)' : 'var(--card)',
-                            color: isPending ? 'rgba(241,196,15,0.55)' : 'var(--cream)',
-                            cursor: 'pointer',
-                            fontWeight: 600,
-                            fontSize: 13,
-                            transition: 'all 0.15s',
-                          }}
+                          style={{ padding: isPending ? '7px 0 5px' : '11px 0', borderRadius: 8, border: isPending ? '1px solid rgba(241,196,15,0.4)' : '1px solid rgba(201,168,76,0.2)', background: isPending ? 'rgba(241,196,15,0.07)' : 'var(--card)', color: isPending ? 'rgba(241,196,15,0.55)' : 'var(--cream)', cursor: 'pointer', fontWeight: 600, fontSize: 13, transition: 'all 0.15s' }}
                           onMouseEnter={e => {
                             if (!isPending) { e.currentTarget.style.background = 'var(--gold)'; e.currentTarget.style.color = 'var(--black)'; }
                             else { e.currentTarget.style.background = 'rgba(241,196,15,0.12)'; }
@@ -477,7 +451,6 @@ export default function BookingFlow() {
                       );
                     })}
                   </div>
-
                   {slots.some(s => s.state === 'pending') && (
                     <div style={{ marginTop: 10, display: 'flex', gap: 16, fontSize: 11, color: 'var(--gray)' }}>
                       <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
