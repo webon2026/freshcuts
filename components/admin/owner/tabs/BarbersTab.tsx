@@ -94,6 +94,21 @@ export default function BarbersTab() {
           </div>
         </div>
         <div>
+          <label className="fc-label" style={{ fontSize: 10, color: 'var(--gray)', display: 'block', marginBottom: 7 }}>Rol de acceso</label>
+          <div style={{ display: 'flex', gap: 10 }}>
+            {([
+              { value: 'barber' as const, label: '✂️ Barbero', desc: 'Ve solo sus citas' },
+              { value: 'owner'  as const, label: '👑 Admin',   desc: 'Ve todo el panel' },
+            ]).map(r => (
+              <button key={r.value} onClick={() => setForm(f => ({ ...f, role: r.value }))}
+                style={{ flex: 1, padding: '10px 12px', borderRadius: 10, border: `2px solid ${form.role === r.value ? 'var(--gold)' : 'rgba(255,255,255,0.1)'}`, background: form.role === r.value ? 'rgba(201,168,76,0.1)' : 'transparent', color: form.role === r.value ? 'var(--gold)' : 'var(--gray)', cursor: 'pointer', textAlign: 'left', transition: 'all 0.15s' }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>{r.label}</div>
+                <div style={{ fontSize: 10, marginTop: 2, opacity: 0.7 }}>{r.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
           <label className="fc-label" style={{ fontSize: 10, color: 'var(--gray)', display: 'block', marginBottom: 5 }}>
             {editing ? 'Nueva contraseña (vacío = sin cambio)' : 'Contraseña *'}
           </label>

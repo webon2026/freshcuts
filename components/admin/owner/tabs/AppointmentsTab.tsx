@@ -23,8 +23,6 @@ const FILTER_LABELS: Record<AppointmentStatus | 'all', string> = {
   cancelled:   '❌ Canceladas',
 };
 
-type SubTab = 'mine' | 'team';
-
 function formatChilePhone(raw?: string): string {
   if (!raw) return '';
   const d = raw.replace(/\D/g, '');
@@ -71,7 +69,6 @@ const WSP_MESSAGES: Partial<Record<AppointmentStatus, (a: Appointment) => string
   confirmed: wspConfirmed, in_progress: wspInProgress, done: wspDone, cancelled: wspCancelled,
 };
 
-// ─── Tarjeta de cita reutilizable ───
 function AppointmentCard({ a, canManage, onUpdate }: {
   a: Appointment;
   canManage: boolean;
@@ -105,7 +102,6 @@ function AppointmentCard({ a, canManage, onUpdate }: {
 
         {a.notes && <div style={{ color: 'var(--gray)', fontSize: 12, marginBottom: canManage ? 12 : 0, fontStyle: 'italic' }}>📝 {a.notes}</div>}
 
-        {/* Solo muestra botones si puede administrar */}
         {canManage && onUpdate && a.status !== 'done' && a.status !== 'cancelled' && (
           <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
             {a.status === 'pending' && (
@@ -135,15 +131,12 @@ function AppointmentCard({ a, canManage, onUpdate }: {
 interface Props { isOwner?: boolean }
 
 export default function AppointmentsTab({ isOwner = false }: Props) {
-  const [subTab, setSubTab] = useState<SubTab>('mine');
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0,10));
   const [filter, setFilter] = useState<AppointmentStatus | 'all'>('all');
 
-  // Mis citas (del dueño o del barbero logueado)
   const [myAppointments, setMyAppointments] = useState<Appointment[]>([]);
   const [myLoading, setMyLoading] = useState(true);
 
-  // Citas del equipo (resto de barberos, solo para owner)
   const [teamAppointments, setTeamAppointments] = useState<Appointment[]>([]);
   const [teamLoading, setTeamLoading] = useState(true);
   const [barbers, setBarbers] = useState<Barber[]>([]);
@@ -153,38 +146,37 @@ export default function AppointmentsTab({ isOwner = false }: Props) {
   const dateRef = useRef(selectedDate);
   useEffect(() => { dateRef.current = selectedDate; }, [selectedDate]);
 
-  // ─── Cargar mis citas ───
+  // ── Mis citas — orden descendente: la más nueva arriba ──
   const loadMyAppointments = useCallback(async () => {
+    if (isOwner) return;
     setMyLoading(true);
     const { data } = await supabase.from('appointments')
       .select('*, barber:barbers(*), service:services(*)')
       .eq('appointment_date', dateRef.current)
       .eq('barber_id', session?.barber_id)
-      .order('appointment_time');
+      .order('appointment_time', { ascending: false }); // ← más reciente primero
     if (data) setMyAppointments(data as Appointment[]);
     setMyLoading(false);
-  }, [session?.barber_id]);
+  }, [isOwner, session?.barber_id]);
 
-  // ─── Cargar citas del equipo (todos menos yo) ───
+  // ── Citas del equipo — orden descendente: la más nueva arriba ──
   const loadTeamAppointments = useCallback(async () => {
     if (!isOwner) return;
     setTeamLoading(true);
     const { data } = await supabase.from('appointments')
       .select('*, barber:barbers(*), service:services(*)')
       .eq('appointment_date', dateRef.current)
-      .neq('barber_id', session?.barber_id)   // excluye al dueño
-      .order('appointment_time');
+      .order('appointment_time', { ascending: false }); // ← más reciente primero
     if (data) setTeamAppointments(data as Appointment[]);
     setTeamLoading(false);
-  }, [isOwner, session?.barber_id]);
+  }, [isOwner]);
 
-  // ─── Cargar lista de barberos para el filtro ───
   const loadBarbers = useCallback(async () => {
     if (!isOwner) return;
     const { data } = await supabase.from('barbers').select('*')
-      .neq('id', session?.barber_id).eq('active', true).order('sort_order');
+      .eq('active', true).order('sort_order');
     if (data) setBarbers(data);
-  }, [isOwner, session?.barber_id]);
+  }, [isOwner]);
 
   useEffect(() => {
     loadMyAppointments();
@@ -193,7 +185,7 @@ export default function AppointmentsTab({ isOwner = false }: Props) {
   }, [selectedDate, loadMyAppointments, loadTeamAppointments, loadBarbers]);
 
   useEffect(() => {
-    const channel = supabase.channel(`appt-owner-${session?.barber_id}`)
+    const channel = supabase.channel(`appt-tab-${session?.barber_id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => {
         loadMyAppointments();
         loadTeamAppointments();
@@ -210,12 +202,11 @@ export default function AppointmentsTab({ isOwner = false }: Props) {
     if (msgFn && waNum) window.open('https://wa.me/' + waNum + '?text=' + msgFn({ ...appt, status }), '_blank');
   }
 
-  // ─── Filtrado ───
-  const myFiltered = filter === 'all' ? myAppointments : myAppointments.filter(a => a.status === filter);
+  const myFiltered   = filter === 'all' ? myAppointments   : myAppointments.filter(a => a.status === filter);
   const teamFiltered = (filter === 'all' ? teamAppointments : teamAppointments.filter(a => a.status === filter))
     .filter(a => selectedBarber === 'all' || a.barber_id === selectedBarber);
 
-  const stats = [
+  const myStats = [
     { emoji: '📋', label: 'Mis citas',   value: myAppointments.length,                                                        color: 'var(--gold)' },
     { emoji: '⏳', label: 'Pendientes',  value: myAppointments.filter(a => ['pending','confirmed'].includes(a.status)).length, color: '#F1C40F' },
     { emoji: '✂️', label: 'Atendiendo',  value: myAppointments.filter(a => a.status === 'in_progress').length,                color: '#E67E22' },
@@ -224,48 +215,84 @@ export default function AppointmentsTab({ isOwner = false }: Props) {
 
   return (
     <div>
-      {/* Header + selector de fecha */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
         <h2 className="fc-title" style={{ fontSize: 24, color: 'var(--gold)' }}>📅 Citas</h2>
         <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
           className="fc-input" style={{ width: 'auto', fontSize: 13 }} />
       </div>
 
-      {/* Sub-tabs solo para owner */}
+      {/* ══ VISTA OWNER: solo equipo ══ */}
       {isOwner && (
-        <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: 18 }}>
-          {([
-            { id: 'mine' as SubTab, label: '✂️ Mis citas' },
-            { id: 'team' as SubTab, label: '👥 Equipo' },
-          ]).map(t => (
-            <button key={t.id} onClick={() => setSubTab(t.id)}
-              style={{ flex: 1, padding: '10px 0', background: 'none', border: 'none', cursor: 'pointer',
-                color: subTab === t.id ? 'var(--gold)' : 'var(--gray)',
-                borderBottom: subTab === t.id ? '2px solid var(--gold)' : '2px solid transparent',
-                fontSize: 13, fontWeight: 600, transition: 'all 0.2s' }}>
-              {t.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* ══════════ MIS CITAS ══════════ */}
-      {(!isOwner || subTab === 'mine') && (
         <div>
-          {/* Stats */}
-          {isOwner && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginBottom: 18 }}>
-              {stats.map(s => (
-                <div key={s.label} className="fc-card" style={{ padding: '14px 8px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 18, marginBottom: 2 }}>{s.emoji}</div>
-                  <div className="fc-title" style={{ fontSize: 22, color: s.color, lineHeight: 1 }}>{s.value}</div>
-                  <div style={{ fontSize: 10, color: 'var(--gray)', marginTop: 3 }}>{s.label}</div>
-                </div>
+          <div style={{ display: 'flex', gap: 6, overflowX: 'auto', marginBottom: 14, paddingBottom: 4, scrollbarWidth: 'none' }}>
+            <button onClick={() => setSelectedBarber('all')}
+              style={{ padding: '6px 13px', borderRadius: 20, border: 'none', cursor: 'pointer', flexShrink: 0, fontSize: 11, fontWeight: 600, transition: 'all 0.2s',
+                background: selectedBarber === 'all' ? 'var(--gold)' : 'var(--card)', color: selectedBarber === 'all' ? 'var(--black)' : 'var(--gray)' }}>
+              👥 Todos
+            </button>
+            {barbers.map(b => (
+              <button key={b.id} onClick={() => setSelectedBarber(b.id)}
+                style={{ padding: '6px 13px', borderRadius: 20, border: 'none', cursor: 'pointer', flexShrink: 0, fontSize: 11, fontWeight: 600, transition: 'all 0.2s',
+                  background: selectedBarber === b.id ? 'var(--gold)' : 'var(--card)', color: selectedBarber === b.id ? 'var(--black)' : 'var(--gray)' }}>
+                {b.avatar_emoji} {b.name}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: 6, overflowX: 'auto', marginBottom: 14, paddingBottom: 4, scrollbarWidth: 'none' }}>
+            {(['all', ...STATUS_ORDER] as const).map(s => (
+              <button key={s} onClick={() => setFilter(s)}
+                style={{ padding: '6px 13px', borderRadius: 20, border: 'none', cursor: 'pointer', flexShrink: 0, fontSize: 11, fontWeight: 600, transition: 'all 0.2s',
+                  background: filter === s ? 'var(--gold)' : 'var(--card)', color: filter === s ? 'var(--black)' : 'var(--gray)' }}>
+                {FILTER_LABELS[s]}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 18 }}>
+            {[
+              { emoji: '📋', label: 'Total equipo', value: teamAppointments.length,                                                              color: 'var(--cream)' },
+              { emoji: '⏳', label: 'Pendientes',   value: teamAppointments.filter(a => ['pending','confirmed'].includes(a.status)).length,      color: '#F1C40F' },
+              { emoji: '🏁', label: 'Atendidos',    value: teamAppointments.filter(a => a.status === 'done').length,                             color: 'var(--green)' },
+            ].map(s => (
+              <div key={s.label} className="fc-card" style={{ padding: '14px 8px', textAlign: 'center' }}>
+                <div style={{ fontSize: 18, marginBottom: 2 }}>{s.emoji}</div>
+                <div className="fc-title" style={{ fontSize: 22, color: s.color, lineHeight: 1 }}>{s.value}</div>
+                <div style={{ fontSize: 10, color: 'var(--gray)', marginTop: 3 }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {teamLoading ? (
+            <div style={{ textAlign: 'center', padding: 48, color: 'var(--gray)' }}><div style={{ fontSize: 32, marginBottom: 8 }}>⏳</div>Cargando...</div>
+          ) : teamFiltered.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 48, color: 'var(--gray)' }}>
+              <div style={{ fontSize: 40, marginBottom: 8 }}>📭</div>
+              <div style={{ fontSize: 14 }}>No hay citas del equipo para esta fecha</div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {teamFiltered.map(a => (
+                <AppointmentCard key={a.id} a={a} canManage={false} />
               ))}
             </div>
           )}
+        </div>
+      )}
 
-          {/* Filtros */}
+      {/* ══ VISTA BARBERO: sus citas ══ */}
+      {!isOwner && (
+        <div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginBottom: 18 }}>
+            {myStats.map(s => (
+              <div key={s.label} className="fc-card" style={{ padding: '14px 8px', textAlign: 'center' }}>
+                <div style={{ fontSize: 18, marginBottom: 2 }}>{s.emoji}</div>
+                <div className="fc-title" style={{ fontSize: 22, color: s.color, lineHeight: 1 }}>{s.value}</div>
+                <div style={{ fontSize: 10, color: 'var(--gray)', marginTop: 3 }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+
           <div style={{ display: 'flex', gap: 6, overflowX: 'auto', marginBottom: 14, paddingBottom: 4, scrollbarWidth: 'none' }}>
             {(['all', ...STATUS_ORDER] as const).map(s => (
               <button key={s} onClick={() => setFilter(s)}
@@ -287,69 +314,6 @@ export default function AppointmentsTab({ isOwner = false }: Props) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {myFiltered.map(a => (
                 <AppointmentCard key={a.id} a={a} canManage={true} onUpdate={updateStatus} />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ══════════ EQUIPO (solo owner) ══════════ */}
-      {isOwner && subTab === 'team' && (
-        <div>
-          {/* Filtro por barbero */}
-          <div style={{ display: 'flex', gap: 6, overflowX: 'auto', marginBottom: 14, paddingBottom: 4, scrollbarWidth: 'none' }}>
-            <button onClick={() => setSelectedBarber('all')}
-              style={{ padding: '6px 13px', borderRadius: 20, border: 'none', cursor: 'pointer', flexShrink: 0, fontSize: 11, fontWeight: 600, transition: 'all 0.2s',
-                background: selectedBarber === 'all' ? 'var(--gold)' : 'var(--card)', color: selectedBarber === 'all' ? 'var(--black)' : 'var(--gray)' }}>
-              👥 Todos
-            </button>
-            {barbers.map(b => (
-              <button key={b.id} onClick={() => setSelectedBarber(b.id)}
-                style={{ padding: '6px 13px', borderRadius: 20, border: 'none', cursor: 'pointer', flexShrink: 0, fontSize: 11, fontWeight: 600, transition: 'all 0.2s',
-                  background: selectedBarber === b.id ? 'var(--gold)' : 'var(--card)', color: selectedBarber === b.id ? 'var(--black)' : 'var(--gray)' }}>
-                {b.avatar_emoji} {b.name}
-              </button>
-            ))}
-          </div>
-
-          {/* Filtros por estado */}
-          <div style={{ display: 'flex', gap: 6, overflowX: 'auto', marginBottom: 14, paddingBottom: 4, scrollbarWidth: 'none' }}>
-            {(['all', ...STATUS_ORDER] as const).map(s => (
-              <button key={s} onClick={() => setFilter(s)}
-                style={{ padding: '6px 13px', borderRadius: 20, border: 'none', cursor: 'pointer', flexShrink: 0, fontSize: 11, fontWeight: 600, transition: 'all 0.2s',
-                  background: filter === s ? 'var(--gold)' : 'var(--card)', color: filter === s ? 'var(--black)' : 'var(--gray)' }}>
-                {FILTER_LABELS[s]}
-              </button>
-            ))}
-          </div>
-
-          {/* Resumen del equipo */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 18 }}>
-            {[
-              { emoji: '📋', label: 'Total equipo', value: teamAppointments.length, color: 'var(--cream)' },
-              { emoji: '⏳', label: 'Pendientes',   value: teamAppointments.filter(a => ['pending','confirmed'].includes(a.status)).length, color: '#F1C40F' },
-              { emoji: '🏁', label: 'Atendidos',    value: teamAppointments.filter(a => a.status === 'done').length, color: 'var(--green)' },
-            ].map(s => (
-              <div key={s.label} className="fc-card" style={{ padding: '14px 8px', textAlign: 'center' }}>
-                <div style={{ fontSize: 18, marginBottom: 2 }}>{s.emoji}</div>
-                <div className="fc-title" style={{ fontSize: 22, color: s.color, lineHeight: 1 }}>{s.value}</div>
-                <div style={{ fontSize: 10, color: 'var(--gray)', marginTop: 3 }}>{s.label}</div>
-              </div>
-            ))}
-          </div>
-
-          {teamLoading ? (
-            <div style={{ textAlign: 'center', padding: 48, color: 'var(--gray)' }}><div style={{ fontSize: 32, marginBottom: 8 }}>⏳</div>Cargando...</div>
-          ) : teamFiltered.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: 48, color: 'var(--gray)' }}>
-              <div style={{ fontSize: 40, marginBottom: 8 }}>📭</div>
-              <div style={{ fontSize: 14 }}>No hay citas del equipo para esta fecha</div>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {teamFiltered.map(a => (
-                // canManage=false → solo lectura, sin botones de acción
-                <AppointmentCard key={a.id} a={a} canManage={false} />
               ))}
             </div>
           )}

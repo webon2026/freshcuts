@@ -1,254 +1,348 @@
 'use client';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Appointment, Barber, Product } from '@/types';
 import { formatPrice, formatTime, BARBER_STATUS_LABELS } from '@/lib/utils';
 
-const SLIDE_DURATION = 8000;
-const SLIDES = ['agenda', 'team', 'products'] as const;
-type Slide = typeof SLIDES[number];
+const LOGO_SRC = '/logo.jpg';
 
-export default function DashboardTV() {
-  const [slide, setSlide] = useState<Slide>('agenda');
-  const [transitioning, setTransitioning] = useState(false);
-  const [appointments, setAppointments] = useState<Appointment[]>([]);
-  const [barbers, setBarbers] = useState<Barber[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [settings, setSettings] = useState<Record<string,string>>({});
-  const [progress, setProgress] = useState(0);
-  const [time, setTime] = useState(new Date());
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const progRef = useRef<NodeJS.Timeout | null>(null);
+const PRODUCT_INTERVAL = 5000;
+const PRODUCTS_PER_PAGE = 4;
+
+// ─── Tiempos de carrusel ──────────────────────────────────────────────────────
+const INTERVAL_BARBERIA = 4000;
+const INTERVAL_ROPA     = 5000;
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CSS = `
+  @keyframes wv1{0%,100%{height:8px}50%{height:38px}}
+  @keyframes wv2{0%,100%{height:20px}30%{height:6px}70%{height:42px}}
+  @keyframes wv3{0%,100%{height:32px}40%{height:8px}80%{height:26px}}
+  @keyframes wv4{0%,100%{height:12px}25%{height:40px}75%{height:10px}}
+  @keyframes wv5{0%,100%{height:26px}50%{height:6px}}
+  @keyframes wv6{0%,100%{height:10px}35%{height:36px}65%{height:14px}}
+  @keyframes wv7{0%,100%{height:38px}45%{height:8px}}
+  @keyframes wv8{0%,100%{height:16px}60%{height:38px}}
+
+  /* Wrapper de par de cards: fade-out → fade-in sin destruir nodos */
+  @keyframes pairFadeIn {
+    from { opacity:0; transform:translateY(6px); }
+    to   { opacity:1; transform:translateY(0);   }
+  }
+  @keyframes pairFadeOut {
+    from { opacity:1; transform:translateY(0);   }
+    to   { opacity:0; transform:translateY(-6px); }
+  }
+
+  /* Dot disponible */
+  @keyframes availPulse {
+    0%,100% { box-shadow:0 0 5px #2ECC71; }
+    50%     { box-shadow:0 0 12px #2ECC71, 0 0 22px #2ECC7140; }
+  }
+  /* Dot EN VIVO */
+  @keyframes livePulse {
+    0%,100% { box-shadow:0 0 8px #2ECC71; }
+    50%     { box-shadow:0 0 18px #2ECC71, 0 0 30px #2ECC7155; }
+  }
+  /* Citas entrada escalonada */
+  @keyframes apptIn {
+    from { opacity:0; transform:translateX(-12px); }
+    to   { opacity:1; transform:translateX(0);     }
+  }
+
+  .pair-entering { animation: pairFadeIn  0.5s cubic-bezier(0.22,1,0.36,1) both; }
+  .pair-leaving  { animation: pairFadeOut 0.35s ease both; }
+`;
+
+// ── Hook de carrusel sin parpadeo ────────────────────────────────────────────
+// Separa "índice visible" de "estado de animación" para que el key del nodo
+// nunca cambie durante el fade-out (evita que React desmonte la imagen).
+function useCarousel(items: Product[], interval: number, step = 2) {
+  const [visibleIdx, setVisibleIdx] = useState(0); // índice actualmente en pantalla
+  const [phase, setPhase]           = useState<'idle'|'leaving'|'entering'>('idle');
+  const nextIdx = useRef(0);
+  const timer   = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    loadAll();
-    const channel = supabase.channel('dashboard')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, loadAppointments)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'barbers' }, loadBarbers)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, loadProducts)
-      .subscribe();
-    const clockTimer = setInterval(() => setTime(new Date()), 1000);
-    return () => { supabase.removeChannel(channel); clearInterval(clockTimer); };
-  }, []);
+    if (items.length <= step) { setVisibleIdx(0); setPhase('idle'); return; }
+    if (timer.current) clearInterval(timer.current);
+    timer.current = setInterval(() => {
+      nextIdx.current = (visibleIdx + step) % items.length;
+      // 1. fade-out del par actual
+      setPhase('leaving');
+      setTimeout(() => {
+        // 2. swap de contenido (sin desmontar el DOM)
+        setVisibleIdx(nextIdx.current);
+        setPhase('entering');
+        // 3. volver a idle
+        setTimeout(() => setPhase('idle'), 520);
+      }, 360);
+    }, interval);
+    return () => { if (timer.current) clearInterval(timer.current); };
+  }, [items.length, visibleIdx, interval, step]); // eslint-disable-line
 
-  useEffect(() => { startSlideTimer(); return () => stopTimers(); }, [slide]);
+  const i0 = items.length === 0 ? -1 : visibleIdx % items.length;
+  const i1 = items.length <= 1 ? -1 : (visibleIdx + 1) % items.length;
+  const pair: Product[] = [
+    ...(i0 >= 0 ? [items[i0]] : []),
+    ...(i1 >= 0 && step > 1 ? [items[i1]] : []),
+  ];
 
-  function stopTimers() {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    if (progRef.current) clearInterval(progRef.current);
-  }
+  return { pair, phase };
+}
 
-  function startSlideTimer() {
-    stopTimers(); setProgress(0);
-    const start = Date.now();
-    progRef.current = setInterval(() => setProgress(Math.min(100, ((Date.now() - start) / SLIDE_DURATION) * 100)), 50);
-    timerRef.current = setTimeout(nextSlide, SLIDE_DURATION);
-  }
+export default function DashboardTV() {
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [barbers, setBarbers]           = useState<Barber[]>([]);
+  const [products, setProducts]         = useState<Product[]>([]);
+  const [settings, setSettings]         = useState<Record<string,string>>({});
+  const [time, setTime]                 = useState(new Date());
+  const [productIdx, setProductIdx]     = useState(0);
+  const productTimer = useRef<NodeJS.Timeout | null>(null);
 
-  function nextSlide() {
-    setTransitioning(true);
-    setTimeout(() => { setSlide(s => SLIDES[(SLIDES.indexOf(s) + 1) % SLIDES.length]); setTransitioning(false); }, 400);
-  }
+  const CAT_BARBERIA = 'e7f975e0-6a8c-41da-ab44-97e47e780fda';
+  const CAT_ROPA     = 'e83f91e9-82ac-4a59-bc68-aa5b7d8d68ad';
 
-  async function loadAll() { await Promise.all([loadAppointments(), loadBarbers(), loadProducts(), loadSettings()]); }
-
-  async function loadSettings() {
-    const { data } = await supabase.from('settings').select('key,value');
-    if (data) { const m: Record<string,string> = {}; data.forEach(s => { m[s.key]=s.value; }); setSettings(m); }
-  }
-
-  async function loadAppointments() {
-    const today = new Date().toISOString().slice(0,10);
+  const loadAppointments = useCallback(async () => {
+    const today   = new Date().toISOString().slice(0, 10);
+    const nowTime = new Date().toTimeString().slice(0, 5);
     const { data } = await supabase
       .from('appointments')
       .select('*, barber:barbers(*), service:services(*)')
       .eq('appointment_date', today)
-      // Solo pending, confirmed e in_progress — los atendidos NO se muestran
-      .in('status', ['pending', 'confirmed', 'in_progress'])
+      .eq('status', 'confirmed')
+      .gte('appointment_time', nowTime)
       .order('appointment_time');
     if (data) setAppointments(data as Appointment[]);
-  }
+  }, []);
 
-  async function loadBarbers() {
-    const { data } = await supabase.from('barbers').select('*').eq('active', true).order('sort_order');
+  const loadBarbers = useCallback(async () => {
+    const { data } = await supabase.from('barbers').select('*')
+      .eq('active', true).eq('role', 'barber').order('sort_order');
     if (data) setBarbers(data);
-  }
+  }, []);
 
-  async function loadProducts() {
-    const { data } = await supabase.from('products').select('*, category:categories(*)').eq('active', true).gt('stock', 0).order('sort_order').limit(8);
-    if (data) setProducts(data as Product[]);
-  }
+  const loadProducts = useCallback(async () => {
+    const { data } = await supabase.from('products')
+      .select('*, category:categories(*)')
+      .eq('active', true).gt('stock', 0).order('sort_order');
+    if (data) { setProducts(data as Product[]); setProductIdx(0); }
+  }, []);
 
-  const h = String(time.getHours()).padStart(2,'0');
-  const m = String(time.getMinutes()).padStart(2,'0');
-  const days = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+  const loadSettings = useCallback(async () => {
+    const { data } = await supabase.from('settings').select('key,value');
+    if (data) { const m: Record<string,string> = {}; data.forEach(s => { m[s.key] = s.value; }); setSettings(m); }
+  }, []);
+
+  const loadAppointmentsRef = useRef(loadAppointments);
+  const loadBarbersRef      = useRef(loadBarbers);
+  const loadProductsRef     = useRef(loadProducts);
+  useEffect(() => { loadAppointmentsRef.current = loadAppointments; }, [loadAppointments]);
+  useEffect(() => { loadBarbersRef.current      = loadBarbers; },      [loadBarbers]);
+  useEffect(() => { loadProductsRef.current     = loadProducts; },     [loadProducts]);
+
+  useEffect(() => {
+    Promise.all([loadAppointments(), loadBarbers(), loadProducts(), loadSettings()]);
+    const channel = supabase.channel(`dashboard-tv-${Date.now()}`)
+      .on('postgres_changes', { event:'*', schema:'public', table:'appointments' }, () => loadAppointmentsRef.current())
+      .on('postgres_changes', { event:'*', schema:'public', table:'barbers' },      () => loadBarbersRef.current())
+      .on('postgres_changes', { event:'*', schema:'public', table:'products' },     () => loadProductsRef.current())
+      .subscribe();
+    const clockTimer = setInterval(() => setTime(new Date()), 1000);
+    const apptTimer  = setInterval(() => loadAppointmentsRef.current(), 60000);
+    return () => { supabase.removeChannel(channel); clearInterval(clockTimer); clearInterval(apptTimer); };
+  }, []); // eslint-disable-line
+
+  const barberia = products.filter(p => p.category_id === CAT_BARBERIA);
+  const ropa     = products.filter(p => p.category_id === CAT_ROPA);
+
+  // Carruseles sin parpadeo
+  const { pair: bPair, phase: bPhase } = useCarousel(barberia, INTERVAL_BARBERIA, 2);
+  const { pair: rPair, phase: rPhase } = useCarousel(ropa,     INTERVAL_ROPA,     2);
+
+  const hh = String(time.getHours()).padStart(2, '0');
+  const mm = String(time.getMinutes()).padStart(2, '0');
+  const days   = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
   const months = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
   const dateStr = `${days[time.getDay()]} ${time.getDate()} de ${months[time.getMonth()]}`;
+  const colorMap: Record<string,string> = { available:'#2ECC71', busy:'#E67E22', break:'#F1C40F', off:'#E74C3C' };
 
-  // Separar en atención vs próximos
-  const inProgress = appointments.filter(a => a.status === 'in_progress');
-  const upcoming = appointments.filter(a => a.status !== 'in_progress');
-
-  return (
-    <div style={{ width: '100vw', height: '100vh', background: 'var(--black)', overflow: 'hidden', position: 'relative', fontFamily: 'Barlow, sans-serif' }}>
-
-      <div style={{ position: 'fixed', inset: 0, backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 40px, rgba(201,168,76,0.012) 40px, rgba(201,168,76,0.012) 41px)', pointerEvents: 'none' }} />
-
-      {/* HEADER */}
-      <div style={{ height: 88, background: 'linear-gradient(90deg,#0a0a0a,#1a1a1a,#0a0a0a)', borderBottom: '2px solid var(--gold)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 60px' }}>
-        <div>
-          <div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 50, color: 'var(--gold)', letterSpacing: 6, lineHeight: 1, textShadow: '0 0 30px rgba(201,168,76,0.3)' }}>FRESH CUTS</div>
-          <div style={{ fontFamily: 'Barlow Condensed', fontSize: 13, color: 'var(--gray)', letterSpacing: 5 }}>SALÓN · SINCE 2018</div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--gray)', fontFamily: 'Barlow Condensed', fontSize: 16, letterSpacing: 3 }}>
-          <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--green)', animation: 'pulse 2s infinite' }} />
-          EN VIVO
-        </div>
-        <div style={{ textAlign: 'right' }}>
-          <div style={{ fontFamily: 'Bebas Neue', fontSize: 46, letterSpacing: 4 }}>{h}:{m}</div>
-          <div style={{ fontFamily: 'Barlow Condensed', fontSize: 14, color: 'var(--gray)', letterSpacing: 2, textTransform: 'uppercase' }}>{dateStr}</div>
-        </div>
+  const SlideSection = ({
+    label, emoji, pair, phase, accentColor,
+  }: { label:string; emoji:string; pair:Product[]; phase:'idle'|'leaving'|'entering'; accentColor:string }) => (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', minHeight:0, overflow:'hidden' }}>
+      <div style={{ fontFamily:'Barlow Condensed', fontSize:10, letterSpacing:5, color:accentColor, marginBottom:8, display:'flex', alignItems:'center', gap:8, flexShrink:0 }}>
+        {emoji} {label}
+        <div style={{ flex:1, height:1, background:`linear-gradient(90deg,${accentColor}40,transparent)` }} />
       </div>
 
-      {/* CONTENIDO */}
-      <div style={{ position: 'absolute', top: 88, left: 0, right: 0, bottom: 56, padding: '32px 60px', opacity: transitioning ? 0 : 1, transform: transitioning ? 'translateX(40px)' : 'none', transition: 'opacity 0.4s ease, transform 0.4s ease', overflowY: 'hidden' }}>
+      {/* Wrapper con clase de animación — los nodos internos NO se destruyen */}
+      <div
+        className={phase === 'leaving' ? 'pair-leaving' : phase === 'entering' ? 'pair-entering' : ''}
+        style={{ flex:1, minHeight:0, display:'flex', gap:10 }}
+      >
+        {pair.length === 0 ? (
+          <div style={{ flex:1, borderRadius:14, background:'#111', display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:8, color:'rgba(255,255,255,0.1)' }}>
+            <div style={{ fontSize:36 }}>{emoji}</div>
+            <div style={{ fontFamily:'Barlow Condensed', fontSize:11, letterSpacing:3 }}>SIN PRODUCTOS</div>
+          </div>
+        ) : pair.map((p, i) => (
+          // Key estable = posición en el par (0 ó 1), nunca el id del producto
+          // → React nunca desmonta la imagen, solo actualiza su src
+          <div key={i} style={{ flex:1, display:'flex', flexDirection:'row', borderRadius:14, overflow:'hidden', background:'#111', border:'1px solid rgba(255,255,255,0.07)' }}>
 
-        {/* ── AGENDA ── */}
-        {slide === 'agenda' && (
-          <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 24 }}>
-
-            {/* En atención ahora */}
-            {inProgress.length > 0 && (
-              <div>
-                <div style={{ fontFamily: 'Barlow Condensed', fontSize: 13, letterSpacing: 5, color: 'var(--green)', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--green)', animation: 'pulse 2s infinite' }} />
-                  EN ATENCIÓN AHORA
-                  <div style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, rgba(46,204,113,0.3), transparent)' }} />
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(inProgress.length, 3)}, 1fr)`, gap: 14 }}>
-                  {inProgress.map(a => (
-                    <div key={a.id} style={{ background: 'rgba(46,204,113,0.05)', border: '1px solid rgba(46,204,113,0.4)', borderLeft: '4px solid var(--green)', borderRadius: 12, padding: '20px 24px', display: 'flex', alignItems: 'center', gap: 18 }}>
-                      <div style={{ fontFamily: 'Bebas Neue', fontSize: 44, color: 'var(--green)', lineHeight: 1, minWidth: 100 }}>{formatTime(a.appointment_time)}</div>
-                      <div>
-                        <div style={{ fontFamily: 'Barlow Condensed', fontSize: 26, fontWeight: 700, textTransform: 'uppercase' }}>{a.client_name}</div>
-                        <div style={{ color: 'var(--gray)', fontSize: 14, marginTop: 2 }}>{a.service?.name}</div>
-                        <div style={{ color: 'var(--green)', fontSize: 12, marginTop: 3, letterSpacing: 1 }}>✂️ {a.barber?.name}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Próximas citas */}
-            <div style={{ flex: 1 }}>
-              <div style={{ fontFamily: 'Barlow Condensed', fontSize: 13, letterSpacing: 5, color: 'var(--gold)', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
-                📅 PRÓXIMAS CITAS
-                <div style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, rgba(201,168,76,0.3), transparent)' }} />
-                <span style={{ fontSize: 11, color: 'var(--gray)' }}>{upcoming.length} pendiente{upcoming.length !== 1 ? 's' : ''}</span>
-              </div>
-
-              {upcoming.length === 0 && inProgress.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--gray)' }}>
-                  <div style={{ fontSize: 48, marginBottom: 8 }}>✅</div>
-                  <div style={{ fontFamily: 'Barlow Condensed', fontSize: 22, letterSpacing: 3 }}>No hay más citas pendientes hoy</div>
-                </div>
-              ) : upcoming.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '30px 0', color: 'var(--gray)', fontFamily: 'Barlow Condensed', fontSize: 18, letterSpacing: 2 }}>
-                  No hay más citas en espera
-                </div>
+            {/* Imagen flush: 42% del ancho, todo el alto */}
+            <div style={{ width:'42%', flexShrink:0, position:'relative', overflow:'hidden' }}>
+              {p.image_url ? (
+                <>
+                  <img
+                    src={p.image_url}
+                    alt={p.name}
+                    style={{ width:'100%', height:'100%', objectFit:'cover', objectPosition:'center', display:'block' }}
+                  />
+                  {/* Gradiente de fusión imagen → texto */}
+                  <div style={{ position:'absolute', inset:0, background:'linear-gradient(to right, transparent 55%, #111 100%)' }} />
+                </>
               ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                  {upcoming.slice(0, 6).map(a => (
-                    <div key={a.id} style={{ background: 'var(--card)', border: '1px solid rgba(201,168,76,0.15)', borderLeft: '4px solid var(--gold)', borderRadius: 12, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 16 }}>
-                      <div style={{ fontFamily: 'Bebas Neue', fontSize: 40, color: 'var(--gold)', lineHeight: 1, minWidth: 90 }}>{formatTime(a.appointment_time)}</div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontFamily: 'Barlow Condensed', fontSize: 22, fontWeight: 700, textTransform: 'uppercase' }}>{a.client_name}</div>
-                        <div style={{ color: 'var(--gray)', fontSize: 13, marginTop: 2 }}>{a.service?.name}</div>
-                        <div style={{ color: 'rgba(201,168,76,0.6)', fontSize: 11, marginTop: 3 }}>✂️ {a.barber?.name}</div>
-                      </div>
-                      <div style={{ fontFamily: 'Barlow Condensed', fontSize: 11, letterSpacing: 2, textTransform: 'uppercase', padding: '4px 10px', borderRadius: 16, background: a.status === 'confirmed' ? 'rgba(46,204,113,0.1)' : 'rgba(241,196,15,0.1)', color: a.status === 'confirmed' ? 'var(--green)' : '#F1C40F', fontWeight: 700 }}>
-                        {a.status === 'confirmed' ? 'Confirmada' : 'Pendiente'}
-                      </div>
-                    </div>
-                  ))}
+                <div style={{ width:'100%', height:'100%', background:'linear-gradient(135deg,#1a1a1a,#222)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:40 }}>{emoji}</div>
+              )}
+              {p.badge && (
+                <div style={{ position:'absolute', top:8, left:8, background:p.badge==='hot'?'#C0392B':accentColor, color:p.badge==='hot'?'white':'#000', fontSize:9, fontWeight:700, padding:'3px 7px', borderRadius:20, fontFamily:'Barlow Condensed', letterSpacing:1 }}>
+                  {p.badge==='hot'?'🔥':'✨'}
                 </div>
               )}
             </div>
-          </div>
-        )}
 
-        {/* ── EQUIPO ── */}
-        {slide === 'team' && (
-          <div>
-            <div style={{ fontFamily: 'Barlow Condensed', fontSize: 13, letterSpacing: 5, color: 'var(--gold)', marginBottom: 28, display: 'flex', alignItems: 'center', gap: 12 }}>
-              ✂️ NUESTRO EQUIPO
-              <div style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, rgba(201,168,76,0.3), transparent)' }} />
+            {/* Info texto */}
+            <div style={{ flex:1, display:'flex', flexDirection:'column', justifyContent:'center', padding:'16px 18px', minWidth:0 }}>
+              <div style={{ fontFamily:'Barlow Condensed', fontSize:16, fontWeight:700, color:'rgba(255,255,255,0.92)', textTransform:'uppercase', letterSpacing:1, lineHeight:1.2, marginBottom:6, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                {p.name}
+              </div>
+              {p.description && (
+                <div style={{ fontFamily:'Barlow Condensed', fontSize:13, color:'rgba(255,255,255,0.38)', marginBottom:10, lineHeight:1.4, display:'-webkit-box', WebkitLineClamp:3, WebkitBoxOrient:'vertical', overflow:'hidden' }}>
+                  {p.description}
+                </div>
+              )}
+              <div style={{ fontFamily:'Bebas Neue', fontSize:28, color:accentColor, letterSpacing:2, textShadow:`0 0 14px ${accentColor}55` }}>
+                {formatPrice(p.price)}
+              </div>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(barbers.length, 4)}, 1fr)`, gap: 24 }}>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ width:'100vw', height:'100vh', background:'#0a0a0a', overflow:'hidden', display:'flex', flexDirection:'column', fontFamily:'Barlow, sans-serif', color:'white' }}>
+
+      <style>{CSS}</style>
+
+      <div style={{ position:'fixed', inset:0, backgroundImage:'repeating-linear-gradient(45deg,transparent,transparent 40px,rgba(201,168,76,0.008) 40px,rgba(201,168,76,0.009) 41px)', pointerEvents:'none', zIndex:0 }} />
+
+      {/* ══ HEADER ══ */}
+      <div style={{ position:'relative', zIndex:1, background:'linear-gradient(180deg,#111,#0d0d0d)', borderBottom:'2px solid rgba(201,168,76,0.5)', flexShrink:0 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:28, height:86, padding:'0 40px' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:14, flexShrink:0 }}>
+            <img src={LOGO_SRC} alt="Fresh Cuts" style={{ height:66, width:66, borderRadius:'50%', objectFit:'cover', border:'2px solid rgba(201,168,76,0.5)', boxShadow:'0 0 18px rgba(201,168,76,0.2)' }} />
+            <div>
+              <div style={{ fontFamily:'Bebas Neue, sans-serif', fontSize:36, color:'#C9A84C', letterSpacing:6, lineHeight:1, textShadow:'0 0 20px rgba(201,168,76,0.35)' }}>FRESH CUTS</div>
+              <div style={{ fontFamily:'Barlow Condensed', fontSize:10, color:'rgba(255,255,255,0.3)', letterSpacing:5, marginTop:2 }}>SALÓN · SINCE 2018</div>
+            </div>
+          </div>
+
+          <div style={{ width:1, height:50, background:'rgba(201,168,76,0.2)', flexShrink:0 }} />
+
+          <div style={{ flex:1, display:'flex', alignItems:'center', gap:10, overflow:'hidden' }}>
+            <div style={{ fontFamily:'Barlow Condensed', fontSize:10, letterSpacing:4, color:'rgba(201,168,76,0.4)', flexShrink:0 }}>EQUIPO</div>
+            <div style={{ display:'flex', gap:8, overflow:'hidden' }}>
               {barbers.map(b => {
+                const bc = colorMap[b.status] || '#888';
                 const sl = BARBER_STATUS_LABELS[b.status];
-                const colorMap: Record<string, string> = { available: 'var(--green)', busy: '#E67E22', break: '#F1C40F', off: '#E74C3C' };
-                const borderColor = colorMap[b.status] || 'var(--gray)';
                 return (
-                  <div key={b.id} style={{ background: 'var(--card)', border: '1px solid rgba(201,168,76,0.15)', borderTop: `3px solid ${borderColor}`, borderRadius: 16, padding: '36px 24px', textAlign: 'center' }}>
-                    <div style={{ width: 100, height: 100, borderRadius: '50%', margin: '0 auto 16px', background: 'rgba(201,168,76,0.08)', border: `2px solid ${borderColor}40`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 46 }}>
-                      {b.avatar_emoji}
-                    </div>
-                    <div style={{ fontFamily: 'Bebas Neue', fontSize: 34, letterSpacing: 3, marginBottom: 10 }}>{b.name}</div>
-                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 18px', borderRadius: 20, background: `${borderColor}18`, border: `1px solid ${borderColor}40` }}>
-                      <div style={{ width: 8, height: 8, borderRadius: '50%', background: borderColor }} />
-                      <span style={{ color: borderColor, fontSize: 13, fontFamily: 'Barlow Condensed', letterSpacing: 2, fontWeight: 700 }}>{sl?.label || b.status}</span>
+                  <div key={b.id} style={{ display:'flex', alignItems:'center', gap:8, background:'rgba(255,255,255,0.03)', border:`1px solid ${bc}30`, borderRadius:28, padding:'5px 14px 5px 7px', flexShrink:0 }}>
+                    <div style={{ width:32, height:32, borderRadius:'50%', background:`${bc}15`, border:`2px solid ${bc}50`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:17 }}>{b.avatar_emoji}</div>
+                    <div>
+                      <div style={{ fontFamily:'Barlow Condensed', fontSize:15, fontWeight:700, letterSpacing:0.5, lineHeight:1 }}>{b.name}</div>
+                      <div style={{ display:'flex', alignItems:'center', gap:4, marginTop:3 }}>
+                        <div style={{ width:6, height:6, borderRadius:'50%', background:bc, animation:b.status==='available'?'availPulse 2s ease-in-out infinite':'none' }} />
+                        <span style={{ fontSize:10, color:bc, fontFamily:'Barlow Condensed', letterSpacing:1 }}>{sl?.label || b.status}</span>
+                      </div>
                     </div>
                   </div>
                 );
               })}
             </div>
           </div>
-        )}
 
-        {/* ── PRODUCTOS ── */}
-        {slide === 'products' && (
-          <div>
-            <div style={{ fontFamily: 'Barlow Condensed', fontSize: 13, letterSpacing: 5, color: 'var(--gold)', marginBottom: 28, display: 'flex', alignItems: 'center', gap: 12 }}>
-              🛍️ DISPONIBLE EN TIENDA — PREGUNTA EN CAJA
-              <div style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, rgba(201,168,76,0.3), transparent)' }} />
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 18 }}>
-              {products.map(p => (
-                <div key={p.id} style={{ background: 'var(--card)', border: '1px solid rgba(201,168,76,0.15)', borderRadius: 14, overflow: 'hidden' }}>
-                  <div style={{ height: 200, background: p.image_url ? `url(${p.image_url}) center/cover` : 'linear-gradient(135deg,#1e1e1e,#2a2a2a)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 60, position: 'relative' }}>
-                    {!p.image_url && '🛍️'}
-                    {p.badge && (
-                      <div style={{ position: 'absolute', top: 10, right: 10, background: p.badge === 'hot' ? '#C0392B' : 'var(--gold)', color: p.badge === 'hot' ? 'white' : 'var(--black)', fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 10, fontFamily: 'Barlow Condensed', letterSpacing: 2 }}>
-                        {p.badge === 'hot' ? '🔥 POPULAR' : '✨ NUEVO'}
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ padding: '14px 16px' }}>
-                    <div style={{ fontFamily: 'Barlow Condensed', fontSize: 18, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>{p.name}</div>
-                    <div style={{ color: 'var(--gray)', fontSize: 12, marginBottom: 8 }}>{p.description}</div>
-                    <div style={{ fontFamily: 'Bebas Neue', fontSize: 30, color: 'var(--gold)', letterSpacing: 2 }}>{formatPrice(p.price)}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
+          <div style={{ textAlign:'right', flexShrink:0 }}>
+            <div style={{ fontFamily:'Bebas Neue', fontSize:50, letterSpacing:4, lineHeight:1 }}>{hh}:{mm}</div>
+            <div style={{ fontFamily:'Barlow Condensed', fontSize:11, color:'rgba(255,255,255,0.35)', letterSpacing:3, textTransform:'uppercase', marginTop:2 }}>{dateStr}</div>
           </div>
-        )}
+        </div>
       </div>
 
-      {/* FOOTER */}
-      <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, height: 56, background: 'var(--dark)', borderTop: '1px solid rgba(201,168,76,0.2)', display: 'flex', alignItems: 'center', padding: '0 60px', gap: 20 }}>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {SLIDES.map(s => (
-            <div key={s} style={{ height: 4, borderRadius: 2, background: slide === s ? 'var(--gold)' : 'rgba(255,255,255,0.1)', width: slide === s ? 50 : 28, transition: 'all 0.3s' }} />
-          ))}
+      {/* ══ BODY ══ */}
+      <div style={{ flex:1, display:'grid', gridTemplateColumns:'300px 1fr', minHeight:0, position:'relative', zIndex:1 }}>
+
+        {/* ── Citas ── */}
+        <div style={{ display:'flex', flexDirection:'column', borderRight:'1px solid rgba(201,168,76,0.15)', background:'rgba(0,0,0,0.3)', overflow:'hidden' }}>
+          <div style={{ padding:'18px 20px 12px', borderBottom:'1px solid rgba(201,168,76,0.1)', flexShrink:0 }}>
+            <div style={{ fontFamily:'Barlow Condensed', fontSize:10, letterSpacing:5, color:'rgba(201,168,76,0.5)', display:'flex', alignItems:'center', gap:8 }}>
+              📅 PRÓXIMAS CITAS
+              <div style={{ flex:1, height:1, background:'linear-gradient(90deg,rgba(201,168,76,0.2),transparent)' }} />
+            </div>
+          </div>
+          <div style={{ flex:1, overflowY:'hidden', display:'flex', flexDirection:'column' }}>
+            {appointments.length === 0 ? (
+              <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10, color:'rgba(255,255,255,0.15)' }}>
+                <div style={{ fontSize:36 }}>✅</div>
+                <div style={{ fontFamily:'Barlow Condensed', fontSize:13, letterSpacing:2, textAlign:'center', lineHeight:1.4 }}>SIN CITAS<br/>CONFIRMADAS</div>
+              </div>
+            ) : appointments.map((a, i) => {
+              const isFirst = i === 0;
+              return (
+                <div key={a.id} style={{ padding:'14px 20px', borderBottom:'1px solid rgba(255,255,255,0.04)', borderLeft:`3px solid ${isFirst?'#C9A84C':'rgba(255,255,255,0.08)'}`, background:isFirst?'rgba(201,168,76,0.05)':'transparent', flexShrink:0, animation:'apptIn 0.4s cubic-bezier(0.22,1,0.36,1) both', animationDelay:`${i*0.06}s` }}>
+                  <div style={{ fontFamily:'Bebas Neue', fontSize:isFirst?34:28, color:isFirst?'#C9A84C':'rgba(255,255,255,0.35)', letterSpacing:2, lineHeight:1, marginBottom:4 }}>{formatTime(a.appointment_time)}</div>
+                  <div style={{ fontFamily:'Barlow Condensed', fontSize:isFirst?20:16, fontWeight:700, textTransform:'uppercase', color:isFirst?'white':'rgba(255,255,255,0.6)', letterSpacing:0.5, lineHeight:1, marginBottom:6 }}>{a.client_name}</div>
+                  <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:3 }}>
+                    <span style={{ fontSize:14 }}>{(a.barber as any)?.avatar_emoji || '✂️'}</span>
+                    <span style={{ fontFamily:'Barlow Condensed', fontSize:12, color:isFirst?'#C9A84C':'rgba(201,168,76,0.5)', letterSpacing:0.5 }}>{a.barber?.name}</span>
+                  </div>
+                  <div style={{ fontFamily:'Barlow Condensed', fontSize:11, color:'rgba(255,255,255,0.3)', letterSpacing:0.5 }}>{a.service?.name}</div>
+                </div>
+              );
+            })}
+          </div>
         </div>
-        <div style={{ flex: 1, height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 2, overflow: 'hidden' }}>
-          <div style={{ height: '100%', background: 'linear-gradient(90deg,var(--gold),var(--gold-l))', width: `${progress}%`, borderRadius: 2, transition: 'width 0.1s linear' }} />
+
+        {/* ── Productos ── */}
+        <div style={{ display:'flex', flexDirection:'column', overflow:'hidden', padding:'16px 24px 14px', gap:0, flex:1 }}>
+          <SlideSection label="PRODUCTOS DE BARBERÍA" emoji="💈" pair={bPair} phase={bPhase} accentColor="#C9A84C" />
+
+          {/* Separador onda */}
+          <div style={{ flexShrink:0, height:48, margin:'10px 0', position:'relative', borderRadius:10, overflow:'hidden', background:'rgba(0,0,0,0.3)', border:'1px solid rgba(201,168,76,0.08)' }}>
+            <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', gap:4, padding:'0 20px' }}>
+              {Array.from({ length:50 }).map((_,i) => {
+                const a = ['wv1','wv2','wv3','wv4','wv5','wv6','wv7','wv8'][i%8];
+                const mid = i>15 && i<35;
+                return <div key={i} style={{ width:4, borderRadius:2, background:mid?'#C9A84C':'rgba(201,168,76,0.25)', animation:`${a} ${(1.1+(i%6)*0.18).toFixed(2)}s ease-in-out ${(i*0.06).toFixed(2)}s infinite`, boxShadow:mid?'0 0 5px rgba(201,168,76,0.45)':'none', alignSelf:'center' }} />;
+              })}
+            </div>
+          </div>
+
+          <SlideSection label="TIENDA DE ROPA" emoji="👕" pair={rPair} phase={rPhase} accentColor="#A89060" />
         </div>
-        <div style={{ fontFamily: 'Barlow Condensed', fontSize: 13, color: 'var(--gray)', letterSpacing: 3, textTransform: 'uppercase' }}>
-          {settings.business_name || 'FRESH CUTS'} · {settings.business_address || 'Santiago, Chile'}
+      </div>
+
+      {/* ══ FOOTER ══ */}
+      <div style={{ position:'relative', zIndex:1, height:40, background:'#060606', borderTop:'1px solid rgba(201,168,76,0.12)', display:'flex', alignItems:'center', padding:'0 40px', flexShrink:0 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10, flex:1 }}>
+          <div style={{ width:6, height:6, borderRadius:'50%', background:'#2ECC71', animation:'livePulse 2s ease-in-out infinite' }} />
+          <span style={{ fontFamily:'Barlow Condensed', fontSize:11, color:'rgba(255,255,255,0.25)', letterSpacing:4 }}>EN VIVO</span>
+        </div>
+        <div style={{ fontFamily:'Barlow Condensed', fontSize:11, color:'rgba(255,255,255,0.2)', letterSpacing:3, textTransform:'uppercase' }}>
+          {settings.business_name || 'FRESH CUTS'} · {settings.business_address || 'SANTIAGO, CHILE'}
         </div>
       </div>
     </div>

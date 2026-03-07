@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Product, Category, CartItem } from '@/types';
 import { formatPrice } from '@/lib/utils';
@@ -12,9 +12,13 @@ export default function CatalogView() {
   const [showCart, setShowCart] = useState(false);
   const [waNumber, setWaNumber] = useState('56998811877');
 
-  useEffect(() => {
-    loadData();
-    loadSettings();
+  const loadData = useCallback(async () => {
+    const [{ data: prods }, { data: cats }] = await Promise.all([
+      supabase.from('products').select('*, category:categories(*)').eq('active', true).order('sort_order'),
+      supabase.from('categories').select('*').order('sort_order'),
+    ]);
+    if (prods) setProducts(prods as Product[]);
+    if (cats) setCategories(cats);
   }, []);
 
   async function loadSettings() {
@@ -22,14 +26,20 @@ export default function CatalogView() {
     if (data?.[0]) setWaNumber(data[0].value);
   }
 
-  async function loadData() {
-    const [{ data: prods }, { data: cats }] = await Promise.all([
-      supabase.from('products').select('*, category:categories(*)').eq('active', true).order('sort_order'),
-      supabase.from('categories').select('*').order('sort_order'),
-    ]);
-    if (prods) setProducts(prods as Product[]);
-    if (cats) setCategories(cats);
-  }
+  // Ref para que el canal no capture loadData stale
+  const loadDataRef = useRef(loadData);
+  useEffect(() => { loadDataRef.current = loadData; }, [loadData]);
+
+  useEffect(() => {
+    loadData();
+    loadSettings();
+    // Canal con nombre único para evitar conflictos
+    const channel = supabase.channel(`catalog-${Date.now()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' },   () => loadDataRef.current())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, () => loadDataRef.current())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filtered = activeCategory === 'all'
     ? products
@@ -77,14 +87,20 @@ export default function CatalogView() {
         {filtered.map(p => {
           const inCart = cart.find(i => i.product.id === p.id);
           return (
-            <div key={p.id} className="fc-card" style={{ overflow: 'hidden' }}>
-              {/* Imagen */}
-              <div style={{
-                height: 160, background: p.image_url ? `url(${p.image_url}) center/cover` : 'linear-gradient(135deg,#1e1e1e,#2a2a2a)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 52, position: 'relative',
-              }}>
-                {!p.image_url && '🛍️'}
+            <div key={p.id} className="fc-card" style={{ overflow: 'hidden', padding: 0 }}>
+              {/* Imagen cuadrada proporcional */}
+              <div style={{ width: '100%', paddingBottom: '100%', position: 'relative' }}>
+                {p.image_url ? (
+                  <img
+                    src={p.image_url}
+                    alt={p.name}
+                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                ) : (
+                  <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(135deg,#1e1e1e,#2a2a2a)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 52 }}>
+                    🛍️
+                  </div>
+                )}
                 {p.badge && (
                   <div style={{
                     position: 'absolute', top: 8, right: 8,

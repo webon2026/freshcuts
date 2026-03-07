@@ -66,7 +66,7 @@ export default function BookingFlow() {
   }
 
   async function loadBarbers() {
-    const { data } = await supabase.from('barbers').select('*').eq('active',true).order('sort_order');
+    const { data } = await supabase.from('barbers').select('*').eq('active',true).eq('role','barber').order('sort_order');
     if (data) setBarbers(data);
   }
 
